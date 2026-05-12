@@ -31,13 +31,33 @@ if 'mpi4py' not in sys.modules:
     sys.modules['mpi4py']     = _mpi4py
     sys.modules['mpi4py.MPI'] = _MPI
 
+# The rest of this code (except for the prompts for Claude) were written by me first.
+# I used Claude to edit JUST the docstrings, to make them more consistent.
+
+# BIDS directory
 bids_dir = Path("/home/NEU480/datasets/narratives")
-fetch_audio           = lambda file_name: wavfile.read(bids_dir / "stimuli" / f"{file_name}_audio.wav")
-fetch_transcript      = lambda file_name: Path(bids_dir / "stimuli" / "transcripts" / f"{file_name}_transcript.txt").read_text()
-fetch_segments        = lambda file_name: json.loads((bids_dir / "stimuli" / "whisperx" / f"{file_name}_audio.json").read_text())["segments"]
+
+# Quick functions to fetch particular files from BIDS
+fetch_audio               = lambda file_name: wavfile.read(bids_dir / "stimuli" / f"{file_name}_audio.wav")
+fetch_transcript          = lambda file_name: Path(bids_dir / "stimuli" / "transcripts" / f"{file_name}_transcript.txt").read_text()
+fetch_segments            = lambda file_name: json.loads((bids_dir / "stimuli" / "whisperx" / f"{file_name}_audio.json").read_text())["segments"]
 fetch_whisperx_transcript = lambda file_name: " ".join(s["text"].strip() for s in fetch_segments(file_name))
 
 def fetch_subject_list(task_name, exclude_subjects=[]):
+    """Return subject IDs from the BIDS directory that have data for a given task.
+
+    Parameters:
+    ----------
+    task_name: str
+        Task identifier (e.g., "tunnel").
+    exclude_subjects: list of str
+        Subject IDs to skip (e.g., ["sub-004", "sub-013"]).
+
+    Return:
+    ------
+    subjects: list of str
+        Sorted list of subject IDs with valid data for the task.
+    """
     subjects = []
     for tsv in sorted(bids_dir.glob("sub-*/sub-*_scans.tsv")):
         df = pd.read_csv(tsv, sep="\t")
@@ -52,6 +72,24 @@ _CACHE_DIR = Path("/scratch/network/ih2422/narratives_cache")
 _VERBOSE = False
 
 def load_bold_masked(sub, task, mask_img, standardize=True):
+    """Load and mask BOLD data for one subject, with disk caching.
+
+    Parameters:
+    ----------
+    sub: str
+        Subject ID (e.g., "sub-001").
+    task: str
+        Task identifier (e.g., "tunnel").
+    mask_img: Nifti1Image
+        Brain mask applied during NiftiMasker extraction.
+    standardize: bool
+        If True, z-score each voxel's timeseries across TRs.
+
+    Return:
+    ------
+    data: np.array [n_trs, n_voxels] or None
+        Masked BOLD data, or None if the BOLD file does not exist.
+    """
     from nilearn.maskers import NiftiMasker
     _CACHE_DIR.mkdir(exist_ok=True)
     std_tag = "std" if standardize else "nostd"
@@ -70,10 +108,34 @@ def load_bold_masked(sub, task, mask_img, standardize=True):
     return data
 
 def isc_filter(subjects, task, mask_img, standardize=True, n_sd=2, title=None, plot=True):
-    """
-    Compute leave-one-out ISC and return (isc_scores, retained_subjects).
+    """Compute leave-one-out ISC and return scores and retained subjects.
+
     Subjects whose mean whole-brain ISC falls more than n_sd SDs below the
-    group mean are flagged as low-attention and excluded from the retained list.
+    group mean are excluded. Results are cached to disk.
+
+    Parameters:
+    ----------
+    subjects: list of str
+        Subject IDs to include.
+    task: str
+        Task identifier (e.g., "tunnel").
+    mask_img: Nifti1Image
+        Brain mask passed to load_bold_masked.
+    standardize: bool
+        If True, z-score BOLD data across TRs before computing ISC.
+    n_sd: float
+        Number of SDs below the group mean used as the exclusion threshold.
+    title: str or None
+        Plot title; defaults to "{task} — Inter-Subject Correlation".
+    plot: bool
+        If True, display a bar chart of per-subject ISC scores.
+
+    Return:
+    ------
+    isc_scores: dict {str: float}
+        Mean whole-brain ISC for each subject.
+    retained: list of str
+        Subject IDs whose ISC is at or above the exclusion threshold.
     """
     _CACHE_DIR.mkdir(exist_ok=True)
     std_tag    = "std" if standardize else "nostd"
@@ -150,6 +212,27 @@ def isc_filter(subjects, task, mask_img, standardize=True, n_sd=2, title=None, p
 
 
 def annotate_scenes(story_name, transcript, valid_scenes, out_path):
+    """Segment a story transcript into labeled scene instances using Claude.
+
+    Results are written to out_path as a TSV and cached; subsequent calls
+    with the same out_path skip the API call and return the cached result.
+
+    Parameters:
+    ----------
+    story_name: str
+        Human-readable story title used in the prompt.
+    transcript: str
+        Full plaintext transcript to annotate.
+    valid_scenes: list of str
+        Scene label vocabulary (e.g., ["home", "bus", "office"]).
+    out_path: Path
+        Destination TSV file for caching annotations.
+
+    Return:
+    ------
+    rows: list of dict
+        List of {"scene": str, "excerpt": str} dicts in story order.
+    """
     if out_path.exists():
         if _VERBOSE:
             print(f"{out_path.name} already exists — skipping API call.")
@@ -206,11 +289,27 @@ Transcript:
     return rows
 
 def align_tsv_to_whisperx(tsv_path, segments, transcript, padding_start=0):
-    """
-    Match each TSV excerpt (generated from whisperx transcript) to the whisperx
-    word list by forward-scanning for the first 4 cleaned words of each excerpt.
-    Uses word-level timestamps directly; interpolates for the rare words missing them.
-    padding_start unused — whisperx timestamps are already absolute.
+    """Align TSV scene annotations to WhisperX word-level timestamps.
+
+    Uses a two-pass forward scan to match each excerpt against the WhisperX
+    word list, then assigns start/end times to each scene instance.
+
+    Parameters:
+    ----------
+    tsv_path: Path
+        TSV file with (scene, excerpt) columns produced by annotate_scenes.
+    segments: list of dict
+        WhisperX segment list from fetch_segments.
+    transcript: str
+        Unused; kept for API compatibility.
+    padding_start: float
+        Unused; WhisperX timestamps are already absolute.
+
+    Return:
+    ------
+    rows: list of dict
+        List of {"scene": str, "start": float, "end": float, "excerpt": str}
+        dicts sorted by onset time.
     """
     import re
 
@@ -288,6 +387,19 @@ def align_tsv_to_whisperx(tsv_path, segments, transcript, padding_start=0):
     return rows
 
 def plot_scene_timeline(aligned_rows, title, scene_order, scene_colors):
+    """Plot a horizontal timeline with one row per scene category.
+
+    Parameters:
+    ----------
+    aligned_rows: list of dict
+        Scene instances with "scene", "start", "end" keys.
+    title: str
+        Plot title.
+    scene_order: list of str
+        Scene labels defining y-axis order.
+    scene_colors: dict {str: str}
+        Hex color per scene label; unlabeled rows default to grey.
+    """
     label_to_y = {p: i for i, p in enumerate(scene_order)}
     label_to_y["other"] = -1
 
@@ -307,6 +419,20 @@ def plot_scene_timeline(aligned_rows, title, scene_order, scene_colors):
     plt.show()
 
 def plot_instance_onsets(instances, title, scene_order, scene_colors):
+    """Plot scene instance onsets as 10-second horizontal bars.
+
+    Parameters:
+    ----------
+    instances: list of dict
+        Scene instances with "scene", "start", "end" keys.
+    title: str
+        Plot title.
+    scene_order: list of str
+        Scene labels defining y-axis order.
+    scene_colors: dict {str: str}
+        Hex color per scene label.
+    """
+
     label_to_y = {p: i for i, p in enumerate(scene_order)}
 
     _, ax = plt.subplots(figsize=(8, 3))
@@ -314,7 +440,7 @@ def plot_instance_onsets(instances, title, scene_order, scene_colors):
         y     = label_to_y.get(row["scene"], -1)
         color = scene_colors.get(row["scene"], "#aaaaaa")
         ax.plot(
-            [row["start"], row["start"] + 15],
+            [row["start"], row["start"] + 10],
             [y, y],
             color=color, linewidth=6, solid_capstyle="butt"
         )
