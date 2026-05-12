@@ -1,10 +1,11 @@
 *
 !claude_api_key.py
 !main.ipynb
+!main.pdf
 !README.md
-!tunnel_places.tsv
-!twenty_places.tsv
-!narratives_prep.py
+!tunnel_scenes.tsv
+!twenty_scenes.tsv
+!narratives_utils.py
 !.gitignore
 !tunnel_exploration.ipynb
 !tunnel_exploration_clean.ipynb

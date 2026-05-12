@@ -7,6 +7,9 @@ Load in Jupyter:
     from claude_api_key import load_vault
     load_vault()
 """
+
+# ATTRIBUTION: This file was entirely written by Claude Code.
+
 import getpass, os, base64
 from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
