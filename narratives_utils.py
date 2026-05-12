@@ -31,7 +31,7 @@ if 'mpi4py' not in sys.modules:
     sys.modules['mpi4py']     = _mpi4py
     sys.modules['mpi4py.MPI'] = _MPI
 
-# The rest of this code (except for the prompts for Claude) were written by me.
+# The rest of this code (except for the prompts for Claude) was written by me, with some guidance from StackOverflow.
 # I used Claude to edit JUST the docstrings, to make them more consistent.
 
 # BIDS directory
